@@ -1,0 +1,93 @@
+# train.us.siv19.dev — Phase 1 stack.
+#
+#   postgres   stateful; GTFS schema applied on first init
+#   api        Rust axum service (stateless) on :8080
+#   mcp        FastMCP HTTP server on :8000, thin client over the api
+#   ingest     one-shot GTFS loader (profile "ingest"); run on a schedule
+#
+# First run:
+#   cp .env.example .env   # then edit secrets
+#   docker compose up -d postgres api mcp
+#   docker compose run --rm ingest      # load the feed
+#
+# Daily refresh: see DEPLOYMENT.md (host cron calls the ingest service).
+
+name: train-siv19
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-train}
+      POSTGRES_USER: ${POSTGRES_USER:-train}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-train}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # schema.sql runs once, only when the data dir is empty
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-train} -d ${POSTGRES_DB:-train}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  api:
+    build:
+      context: ./api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-train}
+      POSTGRES_USER: ${POSTGRES_USER:-train}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-train}
+      API_PORT: 8080
+      GTFS_FEED_ID: ${GTFS_FEED_ID:-mdb-11}
+      GTFS_FEED_TZ: ${GTFS_FEED_TZ:-America/New_York}
+    healthcheck:
+      test: ["CMD-SHELL", "exit 0"]  # app has /health; override with a curl image if desired
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "8080:8080"
+
+  mcp:
+    build:
+      context: ./mcp
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      MCP_PORT: 8000
+      MCP_API_BASE_URL: http://api:8080
+    ports:
+      - "8000:8000"
+
+  # One-shot ingestion job. Not started by default (profile). Invoke with:
+  #   docker compose run --rm ingest
+  ingest:
+    build:
+      context: ./ingestion
+    profiles: ["ingest"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-train}
+      POSTGRES_USER: ${POSTGRES_USER:-train}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-train}
+      GTFS_FEED_ID: ${GTFS_FEED_ID:-mdb-11}
+      GTFS_PRIMARY_URL: ${GTFS_PRIMARY_URL:-https://files.mobilitydatabase.org/mdb-11/latest.zip}
+      GTFS_FALLBACK_URL: ${GTFS_FALLBACK_URL:-https://content.amtrak.com/content/gtfs/GTFS.zip}
+
+volumes:
+  pgdata:
