@@ -11,7 +11,7 @@ they call at each station. No fares, no seats, no booking, no live positions
 ```
 db/           GTFS schema.sql (9 tables + meta, integer-seconds times, indexes)
 ingestion/    Python COPY-based GTFS loader for Amtrak (mdb-11)
-api/          Rust REST API (axum + sqlx + Postgres) — the one query layer
+api/          Python REST API (FastAPI + psycopg + Postgres) — the one query layer
 mcp/          FastMCP server (5 tools, thin client over the API)
 cli/          Typer CLI `train` (thin client over the API)
 docker-compose.yml   postgres + api + mcp + one-shot ingest
@@ -26,16 +26,16 @@ three ways to reach it.
 
 ```
    REST clients ─┐
-   MCP agents  ──┼──▶  Rust API (axum)  ──▶  PostgreSQL (GTFS + indexes)
+   MCP agents  ──┼──▶  Python API (FastAPI) ──▶ PostgreSQL (GTFS + indexes)
    CLI `train` ──┘                               ▲
                                                  │ daily
                                        Python ingestion (mdb-11 zip)
 ```
 
-The API was built in Rust (axum + sqlx). It plays the same role as the Java
-service in the reference repo [sivab193/india-public-transport](https://github.com/sivab193/india-public-transport);
-the GTFS schema, the COPY-based ingestion, and the index strategy are carried
-over directly.
+The entire application stack is Python. The API uses FastAPI with an async
+psycopg connection pool; ingestion uses psycopg COPY; MCP uses FastMCP; and
+the CLI uses Typer. The GTFS schema, COPY-based ingestion, and index strategy
+follow the reference repo [sivab193/india-public-transport](https://github.com/sivab193/india-public-transport).
 
 ## Quick start (Docker)
 
@@ -119,20 +119,18 @@ train trip <trip-id>
 train status
 ```
 
-## Building / testing the API locally (without Docker)
+## Running and testing the API locally (without Docker)
 
 ```bash
 cd api
-cargo test      # unit tests for the GTFS time conversions
-cargo build --release
-DATABASE_URL=postgres://train:train@localhost:5432/train ./target/release/train-api
+python -m venv .venv
+.venv/Scripts/pip install -r requirements-dev.txt  # Windows
+.venv/Scripts/pytest
+DATABASE_URL=postgresql://train:train@localhost:5432/train .venv/Scripts/python -m app
 ```
 
-> Note: this repository was authored in an environment without a Rust
-> toolchain or Docker, so the API was not compiled here. The code uses sqlx in
-> runtime-query mode (no compile-time database needed); `cargo build` inside
-> the Docker image is the first full compile. Run `cargo test` / `cargo build`
-> to verify before deploying.
+On macOS/Linux, use `.venv/bin/pip`, `.venv/bin/pytest`, and
+`.venv/bin/python` instead. OpenAPI documentation is available at `/docs`.
 
 ## Hosting & refresh
 

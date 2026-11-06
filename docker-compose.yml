@@ -1,7 +1,7 @@
 # train.us.siv19.dev — Phase 1 stack.
 #
 #   postgres   stateful; GTFS schema applied on first init
-#   api        Rust axum service (stateless) on :8080
+#   api        Python FastAPI service (stateless) on :8080
 #   mcp        FastMCP HTTP server on :8000, thin client over the api
 #   ingest     one-shot GTFS loader (profile "ingest"); run on a schedule
 #
@@ -31,8 +31,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
 
   api:
     build:
@@ -51,7 +51,7 @@ services:
       GTFS_FEED_ID: ${GTFS_FEED_ID:-mdb-11}
       GTFS_FEED_TZ: ${GTFS_FEED_TZ:-America/New_York}
     healthcheck:
-      test: ["CMD-SHELL", "exit 0"]  # app has /health; override with a curl image if desired
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5

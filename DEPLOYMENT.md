@@ -111,7 +111,7 @@ serves a half-loaded feed, and it records the dataset date in `meta`
 
 ## 4. Option B — GCP (per the reference repo's pattern)
 
-Mirrors the India repo's GCP deployment guide, adapted to the Rust API.
+Mirrors the India repo's GCP deployment guide, adapted to the Python FastAPI service.
 
 - **Database:** Cloud SQL for PostgreSQL 16 (db-g1-small is plenty). Apply
   `db/schema.sql` once via `gcloud sql` or a migration step.
@@ -173,8 +173,8 @@ the feed — so backups are about convenience, not data loss risk.
   there is a reason.
 - **Rate-limit generously** at the proxy (e.g. Caddy/nginx `limit_req`), tighten
   only if needed.
-- Postgres is not exposed publicly in production — drop the `5432` port mapping
-  from compose on the server (it is there for local dev convenience).
+- Postgres is only exposed to the internal Compose network; the checked-in
+  Compose file does not publish port `5432` on the host.
 
 ---
 

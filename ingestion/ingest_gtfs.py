@@ -25,12 +25,12 @@ import csv
 import io
 import os
 import sys
-import tempfile
 import zipfile
-from datetime import date, datetime
+from datetime import date
+from email.utils import parsedate_to_datetime
 from urllib.request import Request, urlopen
 
-import psycopg2
+import psycopg
 
 # ---------------------------------------------------------------------------
 # Config (env with sane defaults; see .env.example)
@@ -198,7 +198,7 @@ PK_FIRST_WINS = {
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
-def download_feed() -> bytes:
+def download_feed() -> tuple[bytes, str, date]:
     last_err = None
     for url in (PRIMARY_URL, FALLBACK_URL):
         try:
@@ -206,8 +206,15 @@ def download_feed() -> bytes:
             req = Request(url, headers={"User-Agent": USER_AGENT})
             with urlopen(req, timeout=120) as resp:
                 data = resp.read()
+                resolved_url = resp.geturl()
+                last_modified = resp.headers.get("Last-Modified")
+            dataset_date = (
+                parsedate_to_datetime(last_modified).date()
+                if last_modified
+                else date.today()
+            )
             print(f"[ingest] downloaded {len(data):,} bytes from {url}")
-            return data
+            return data, resolved_url, dataset_date
         except Exception as e:  # noqa: BLE001
             print(f"[ingest] failed {url}: {e}", file=sys.stderr)
             last_err = e
@@ -265,7 +272,12 @@ def build_copy_buffer(raw_bytes: bytes, table_name: str, col_defs) -> tuple[io.S
 # ---------------------------------------------------------------------------
 # Load into Postgres via staging tables + atomic swap
 # ---------------------------------------------------------------------------
-def load(conn, extracted: dict[str, bytes], source_url: str):
+def load(
+    conn,
+    extracted: dict[str, bytes],
+    source_url: str,
+    data_as_of: date,
+):
     cur = conn.cursor()
     staged = []
 
@@ -281,11 +293,13 @@ def load(conn, extracted: dict[str, bytes], source_url: str):
         cur.execute(f"CREATE TABLE {staging} (LIKE {table_name} INCLUDING DEFAULTS);")
 
         buf, rows = build_copy_buffer(extracted[gtfs_file], table_name, defs)
-        cur.copy_expert(
+        copy_sql = (
             f"COPY {staging} ({', '.join(db_cols)}) "
-            f"FROM STDIN WITH (FORMAT text, NULL '{NULL_TOKEN}')",
-            buf,
+            f"FROM STDIN WITH (FORMAT text, NULL '{NULL_TOKEN}')"
         )
+        with cur.copy(copy_sql) as copy:
+            while chunk := buf.read(64 * 1024):
+                copy.write(chunk)
         print(f"[ingest] staged {rows:,} rows into {staging}")
         staged.append(table_name)
 
@@ -297,13 +311,13 @@ def load(conn, extracted: dict[str, bytes], source_url: str):
         cur.execute(f"INSERT INTO {table_name} SELECT * FROM {table_name}_staging;")
         cur.execute(f"DROP TABLE {table_name}_staging;")
 
-    _write_meta(cur, source_url)
+    _write_meta(cur, source_url, data_as_of)
     conn.commit()
     cur.close()
     print("[ingest] committed.")
 
 
-def _write_meta(cur, source_url: str):
+def _write_meta(cur, source_url: str, data_as_of: date):
     cur.execute("SELECT min(start_date), max(end_date) FROM calendar;")
     start, end = cur.fetchone()
     cur.execute("SELECT count(*) FROM routes;")
@@ -313,7 +327,6 @@ def _write_meta(cur, source_url: str):
     )
     station_count = cur.fetchone()[0]
 
-    data_as_of = date.today().isoformat()
     cur.execute(
         """
         INSERT INTO meta
@@ -333,8 +346,7 @@ def _write_meta(cur, source_url: str):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    zip_bytes = download_feed()
-    source_url = PRIMARY_URL
+    zip_bytes, source_url, data_as_of = download_feed()
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         names = set(zf.namelist())
@@ -347,9 +359,9 @@ def main():
         print(f"[ingest] feed files: {sorted(extracted)}")
 
     print(f"[ingest] connecting to postgres {DB['host']}:{DB['port']}/{DB['dbname']}")
-    conn = psycopg2.connect(**DB)
+    conn = psycopg.connect(**DB)
     try:
-        load(conn, extracted, source_url)
+        load(conn, extracted, source_url, data_as_of)
     finally:
         conn.close()
     print("[ingest] done.")
